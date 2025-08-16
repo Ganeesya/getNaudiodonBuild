@@ -20,16 +20,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      # 誤ディレクトリ実行の早期検出
-      - name: Ensure binding.gyp exists
-        shell: pwsh
-        run: |
-          if (!(Test-Path "binding.gyp")) {
-            Write-Error "binding.gyp not found at repo root"
-            exit 1
-          }
-
-      # 念のためクリーン（前回失敗の残骸でEPERMになることを避ける）
+      # 失敗の残骸でEPERMになるのを避けるため軽く掃除
       - name: Clean node_modules (best-effort)
         shell: pwsh
         run: |
@@ -37,44 +28,50 @@ jobs:
             try { Remove-Item -Recurse -Force "node_modules" -ErrorAction Stop } catch {}
           }
 
-      # lockfile があれば ci を試す → 不整合なら install に自動フォールバック
-      # dev依存（prebuildify/node-gyp-build等）は省かない
-      - name: Install deps (ci with fallback)
+      # lockfile 不整合で落ちないよう npm install に固定（devは省く）
+      - name: Install runtime deps
+        shell: pwsh
+        run: npm install --omit=dev --no-fund --no-audit
+
+      # prebuild を実行するディレクトリを自動判定
+      - name: Detect addon directory
+        id: paths
         shell: pwsh
         run: |
-          if (Test-Path "package-lock.json") {
-            npm ci
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "Lockfile out of sync → running npm install to refresh"
-              npm install --no-fund --no-audit
-            }
+          if (Test-Path "binding.gyp") {
+            "dir=." >> $env:GITHUB_OUTPUT
+          } elseif (Test-Path "node_modules\\naudiodon\\binding.gyp") {
+            "dir=node_modules\\naudiodon" >> $env:GITHUB_OUTPUT
           } else {
-            npm install --no-fund --no-audit
+            Write-Error "binding.gyp not found (repo root nor node_modules\\naudiodon)"
+            exit 1
           }
 
-      # Windowsでは npx より npm script 経由が安定
-      # package.json に "prebuild": "prebuildify --napi" が無い場合は自動フォールバック
+      - name: Show addon dir
+        shell: pwsh
+        run: echo "AddonDir=${{ steps.paths.outputs.dir }}"
+
+      # prebuildify を「binding.gyp のある場所」で実行
       - name: Build N-API prebuilds
         shell: pwsh
-        run: |
-          node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.prebuild ? 0 : 1)"
-          if ($LASTEXITCODE -eq 0) {
-            npm run prebuild
-          } else {
-            npx --yes prebuildify --napi
-          }
+        working-directory: ${{ steps.paths.outputs.dir }}
+        run: npx --yes prebuildify --napi
 
-      - name: Smoke test
+      # 生成確認（.node の存在チェック）
+      - name: Verify output
         shell: pwsh
-        run: node -e "require('node-gyp-build')(__dirname); console.log('ok', process.platform, process.arch)"
+        working-directory: ${{ steps.paths.outputs.dir }}
+        run: |
+          if (!(Test-Path "prebuilds")) { Write-Error "prebuilds folder not found"; exit 1 }
+          Get-ChildItem -Recurse prebuilds | Write-Host
 
+      # Windowsはzipで固める
       - name: Pack (zip)
         shell: pwsh
-        run: |
-          if (!(Test-Path prebuilds)) { Write-Error 'prebuilds folder not found'; exit 1 }
-          Compress-Archive -Path prebuilds -DestinationPath prebuilds-win32-x64.zip -Force
+        working-directory: ${{ steps.paths.outputs.dir }}
+        run: Compress-Archive -Path prebuilds -DestinationPath prebuilds-win32-x64.zip -Force
 
       - uses: actions/upload-artifact@v4
         with:
           name: prebuilds-win32-x64
-          path: prebuilds-win32-x64.zip
+          path: ${{ steps.paths.outputs.dir }}\prebuilds-win32-x64.zip
