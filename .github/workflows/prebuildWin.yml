@@ -10,6 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Nodeは18に固定（N-API prebuildはNode20/22でも動作）
       - uses: actions/setup-node@v4
         with:
           node-version: '18'
@@ -19,7 +20,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      # 念のためアドオン直下で実行できているか確認
+      # 誤ディレクトリ実行の早期検出
       - name: Ensure binding.gyp exists
         shell: pwsh
         run: |
@@ -28,17 +29,31 @@ jobs:
             exit 1
           }
 
-      # lockfile があれば ci、無ければ install（devを省かない）
-      - name: Install deps (with dev)
+      # 念のためクリーン（前回失敗の残骸でEPERMになることを避ける）
+      - name: Clean node_modules (best-effort)
+        shell: pwsh
+        run: |
+          if (Test-Path "node_modules") {
+            try { Remove-Item -Recurse -Force "node_modules" -ErrorAction Stop } catch {}
+          }
+
+      # lockfile があれば ci を試す → 不整合なら install に自動フォールバック
+      # dev依存（prebuildify/node-gyp-build等）は省かない
+      - name: Install deps (ci with fallback)
         shell: pwsh
         run: |
           if (Test-Path "package-lock.json") {
             npm ci
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Lockfile out of sync → running npm install to refresh"
+              npm install --no-fund --no-audit
+            }
           } else {
             npm install --no-fund --no-audit
           }
 
-      # prebuild スクリプトがあればそれを、無ければ npx prebuildify を実行
+      # Windowsでは npx より npm script 経由が安定
+      # package.json に "prebuild": "prebuildify --napi" が無い場合は自動フォールバック
       - name: Build N-API prebuilds
         shell: pwsh
         run: |
@@ -63,14 +78,3 @@ jobs:
         with:
           name: prebuilds-win32-x64
           path: prebuilds-win32-x64.zip
-
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with: { path: dist }
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/**/* 
