@@ -9,8 +9,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2022   # Windows x64
-            label: win32-x64
           - os: macos-13       # Intel macOS x64
             label: darwin-x64
           - os: macos-14       # Apple Silicon arm64
@@ -19,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '18', check-latest: true }
+        with: { node-version: '20', check-latest: true }
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
 

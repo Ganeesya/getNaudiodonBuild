@@ -1,0 +1,76 @@
+name: prebuild-win
+on:
+  push: { tags: ['v*'] }
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          check-latest: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # 念のためアドオン直下で実行できているか確認
+      - name: Ensure binding.gyp exists
+        shell: pwsh
+        run: |
+          if (!(Test-Path "binding.gyp")) {
+            Write-Error "binding.gyp not found at repo root"
+            exit 1
+          }
+
+      # lockfile があれば ci、無ければ install（devを省かない）
+      - name: Install deps (with dev)
+        shell: pwsh
+        run: |
+          if (Test-Path "package-lock.json") {
+            npm ci
+          } else {
+            npm install --no-fund --no-audit
+          }
+
+      # prebuild スクリプトがあればそれを、無ければ npx prebuildify を実行
+      - name: Build N-API prebuilds
+        shell: pwsh
+        run: |
+          node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.prebuild ? 0 : 1)"
+          if ($LASTEXITCODE -eq 0) {
+            npm run prebuild
+          } else {
+            npx --yes prebuildify --napi
+          }
+
+      - name: Smoke test
+        shell: pwsh
+        run: node -e "require('node-gyp-build')(__dirname); console.log('ok', process.platform, process.arch)"
+
+      - name: Pack (zip)
+        shell: pwsh
+        run: |
+          if (!(Test-Path prebuilds)) { Write-Error 'prebuilds folder not found'; exit 1 }
+          Compress-Archive -Path prebuilds -DestinationPath prebuilds-win32-x64.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuilds-win32-x64
+          path: prebuilds-win32-x64.zip
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/* 
