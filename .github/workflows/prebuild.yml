@@ -1,0 +1,50 @@
+name: prebuild
+on:
+  push: { tags: ['v*'] }
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022   # Windows x64
+            label: win32-x64
+          - os: macos-13       # Intel macOS x64
+            label: darwin-x64
+          - os: macos-14       # Apple Silicon arm64
+            label: darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', check-latest: true }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      # ライブラリ側は lockfile なしでもOK。必要なら npm ci に置換
+      - run: npm install --no-fund --no-audit
+
+      - run: npx prebuildify --napi
+
+      - name: Smoke test
+        run: node -e "require('node-gyp-build')(__dirname); console.log('ok', process.platform, process.arch)"
+
+      - name: Pack
+        shell: bash
+        run: tar -czf prebuilds-${{ matrix.label }}.tar.gz prebuilds
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuilds-${{ matrix.label }}
+          path: prebuilds-${{ matrix.label }}.tar.gz
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist }
+      - uses: softprops/action-gh-release@v2
+        with: { files: dist/**/* }
